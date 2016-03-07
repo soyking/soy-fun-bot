@@ -1,13 +1,9 @@
 package main
 
 import (
-	"crypto/md5"
-	"encoding/json"
 	"fmt"
-	"github.com/astaxie/beego/httplib"
-	"gopkg.in/telegram-bot-api.v1"
+	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"log"
-	"net/url"
 	"strings"
 )
 
@@ -34,12 +30,35 @@ func main() {
 		switch command {
 		case "/start":
 			text := `本机器人提供查询天气功能~！发送你的地址来吧
+- /movie [电影名] 可以收到一张电影海报
 
-感谢 Baidu LBS API
+感谢 Baidu LBS API、Douban API
 			`
 			msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
-			msg.ParseMode = "HTML"
 			sendAndCheck(msg)
+
+		case "/movie":
+			query := update.Message.CommandArguments()
+			if query == "" {
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "告诉我电影的名字哦:)")
+				sendAndCheck(msg)
+			} else {
+				poster, err := getPoster(query)
+				if err != nil {
+					var text string
+					if err == errNoSearchResults {
+						text = "找不到呀找不到:("
+					} else {
+						text = "可能出了什么差错，本机器人也不知道该怎么办 :("
+					}
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
+					sendAndCheck(msg)
+				} else {
+					msg := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, tgbotapi.FileBytes{Bytes: poster, Name: "poster.jpg"})
+					sendAndCheck(msg)
+				}
+			}
+
 		default:
 			latitude := update.Message.Location.Latitude
 			longitude := update.Message.Location.Longitude
@@ -76,6 +95,27 @@ func main() {
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
 				msg.ParseMode = "HTML"
 				sendAndCheck(msg)
+			} else {
+				if update.InlineQuery.ID != "" {
+					config := tgbotapi.InlineConfig{InlineQueryID: update.InlineQuery.ID}
+					posters, _ := getPosterURL(update.InlineQuery.Query)
+					for i, poster := range posters {
+						photo := tgbotapi.InlineQueryResultPhoto{}
+						photo.Type = "photo"
+						photo.ID = fmt.Sprint("%d", i)
+						photo.URL = poster
+						photo.ThumbURL = poster
+						photo.Width = 50
+						photo.Height = 50
+						photo.Title = "title"
+						photo.DisableWebPagePreview = true
+						config.Results = append(config.Results, photo)
+					}
+					_, err := bot.AnswerInlineQuery(config)
+					if err != nil {
+						log.Println(err)
+					}
+				}
 			}
 		}
 	}
@@ -86,34 +126,4 @@ func sendAndCheck(msg tgbotapi.Chattable) {
 	if err != nil {
 		log.Println(err)
 	}
-}
-
-func baiduWeather(latitude float32, longitude float32, data interface{}) error {
-	basePath := fmt.Sprintf("/telematics/v3/weather?location=%f,%f&output=json", longitude, latitude)
-	queryURL := baiduLBSAPI(basePath)
-
-	request := httplib.Get(queryURL)
-	bytes, err := request.Bytes()
-	if err != nil {
-		return err
-	}
-
-	return json.Unmarshal(bytes, data)
-}
-
-var (
-	baiduLBSAK = "***"
-	baiduLBSSK = "***"
-)
-
-func baiduLBSAPI(basePath string) string {
-	sn := baiduCalculateSN(basePath)
-	return fmt.Sprintf("http://api.map.baidu.com%s&ak=%s&sn=%s", basePath, baiduLBSAK, sn)
-}
-
-// 计算百度LBS API 中的 SN 值
-func baiduCalculateSN(path string) string {
-	path = path + "&ak=" + baiduLBSAK + baiduLBSSK
-	encodedStr := url.QueryEscape(path)
-	return fmt.Sprintf("%x", md5.Sum([]byte(encodedStr)))
 }
