@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/soyking/telegram-bot-api"
 	"log"
 	"strings"
 )
@@ -25,7 +25,8 @@ func main() {
 	updates, err := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		command := update.Message.Command()
+		m := &update.Message
+		command := m.Command()
 
 		switch command {
 		case "/start":
@@ -34,13 +35,13 @@ func main() {
 
 感谢 Baidu LBS API、Douban API
 			`
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
+			msg := tgbotapi.NewMessage(m.Chat.ID, text)
 			sendAndCheck(msg)
 
 		case "/movie":
-			query := update.Message.CommandArguments()
+			query := m.CommandArguments()
 			if query == "" {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "告诉我电影的名字哦:)")
+				msg := tgbotapi.NewMessage(m.Chat.ID, "告诉我电影的名字哦:)")
 				sendAndCheck(msg)
 			} else {
 				poster, err := getPoster(query)
@@ -49,19 +50,19 @@ func main() {
 					if err == errNoSearchResults {
 						text = "找不到呀找不到:("
 					} else {
-						text = "可能出了什么差错，本机器人也不知道该怎么办 :("
+						sendErr(m, err)
 					}
-					msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
+					msg := tgbotapi.NewMessage(m.Chat.ID, text)
 					sendAndCheck(msg)
 				} else {
-					msg := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, tgbotapi.FileBytes{Bytes: poster, Name: "poster.jpg"})
+					msg := tgbotapi.NewPhotoUpload(m.Chat.ID, tgbotapi.FileBytes{Bytes: poster, Name: "poster.jpg"})
 					sendAndCheck(msg)
 				}
 			}
 
 		default:
-			latitude := update.Message.Location.Latitude
-			longitude := update.Message.Location.Longitude
+			latitude := m.Location.Latitude
+			longitude := m.Location.Longitude
 			if latitude != 0.0 && longitude != 0.0 {
 				var text string
 				var data struct {
@@ -77,8 +78,8 @@ func main() {
 				}
 				err := baiduWeather(latitude, longitude, &data)
 				if err != nil {
-					log.Println(err)
-					text = "可能出了什么差错，本机器人也不知道该怎么办 :("
+					sendErr(m, err)
+					continue
 				} else if len(data.Results) == 0 || len(data.Results[0].WeatherData) == 0 {
 					text = "这个地方我可能没去过 :("
 				} else {
@@ -92,33 +93,64 @@ func main() {
 						data.Results[0].PM25)
 				}
 
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
+				msg := tgbotapi.NewMessage(m.Chat.ID, text)
 				msg.ParseMode = "HTML"
 				sendAndCheck(msg)
 			} else {
 				if update.InlineQuery.ID != "" {
 					config := tgbotapi.InlineConfig{InlineQueryID: update.InlineQuery.ID}
-					posters, _ := getPosterURL(update.InlineQuery.Query)
-					for i, poster := range posters {
-						photo := tgbotapi.InlineQueryResultPhoto{}
-						photo.Type = "photo"
-						photo.ID = fmt.Sprint("%d", i)
-						photo.URL = poster
-						photo.ThumbURL = poster
-						photo.Width = 50
-						photo.Height = 50
-						photo.Title = "title"
-						photo.DisableWebPagePreview = true
-						config.Results = append(config.Results, photo)
-					}
-					_, err := bot.AnswerInlineQuery(config)
+					subjects, err := getPosterURL(update.InlineQuery.Query)
 					if err != nil {
-						log.Println(err)
+						sendErr(m, err)
+						continue
+					}
+					for i, subject := range subjects {
+						article := tgbotapi.InlineQueryResultArticle{}
+						article.ID = fmt.Sprint("%d", i)
+						if len(subject.Directors) > 0 {
+							directors := "导演："
+							for _, cast := range subject.Directors {
+								directors = directors + cast.Name + " "
+							}
+							article.Description = article.Description + directors + "\n"
+						}
+						if len(subject.Casts) > 0 {
+							casts := "主演："
+							for _, cast := range subject.Casts {
+								casts = casts + cast.Name + " "
+							}
+							article.Description = article.Description + casts + "\n"
+						}
+						if len(subject.Genres) > 0 {
+							topics := "主题："
+							for _, genre := range subject.Genres {
+								topics = topics + genre + " "
+							}
+							article.Description = article.Description + topics + "\n"
+						}
+						article.Description += fmt.Sprintf("评分：%.1f", subject.Rating.Average)
+						article.Title = subject.Title + " (" + subject.Year + ")"
+						article.URL = subject.URL
+						article.ThumbURL = subject.Images.Large
+						article.MessageText = "<a href=\"" + subject.URL + "\">" + subject.Title + "</a>\n<pre>" + article.Description + "</pre>"
+						article.ParseMode = "HTML"
+						config.Results = append(config.Results, &article)
+					}
+					_, err = bot.AnswerInlineQuery(config)
+					if err != nil {
+						sendErr(m, err)
+						continue
 					}
 				}
 			}
 		}
 	}
+}
+
+func sendErr(m *tgbotapi.Message, err error) {
+	log.Println(err)
+	msg := tgbotapi.NewMessage(m.Chat.ID, "可能出了什么差错，本机器人也不知道该怎么办 :(")
+	sendAndCheck(msg)
 }
 
 func sendAndCheck(msg tgbotapi.Chattable) {
